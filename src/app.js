@@ -99,8 +99,11 @@ const AXIS_RIG_BLOCKERS = {
   bottom_trunnion_stack: ["bottom_trunnion_fasteners"]
 };
 
+let independentJobsSource = null;
+let materialHydrationPromise = null;
+
 const state = {
-  mode: "styled",
+  mode: "fast",
   viewMode: "assembled",
   mapChannel: "baseColor",
   activeRole: "all",
@@ -146,6 +149,7 @@ const state = {
   modelSize: new THREE.Vector3(),
   modelMaxDim: 1,
   match: { matched: 0, fallback: 0, missingRoleJobs: 0 },
+  materialJobStatus: "pending",
   mapAudit: { declaredMaps: 0, loadRequests: 0, missingMaps: 0 }
 };
 
@@ -333,6 +337,12 @@ function createMaterial(role) {
     state.envStrength
   ].join("|");
   if (state.materials.has(key)) return state.materials.get(key);
+  if (state.mode === "fast") {
+    const material = createFallbackMaterial(role);
+    material.name = `preview_fast_${role}`;
+    state.materials.set(key, material);
+    return material;
+  }
 
   const maps = textureSet(role);
   const config = materialConfig(role);
@@ -2059,6 +2069,7 @@ function updateLog() {
     visibleMeshes: state.visibleMeshes,
     matchedMeshes: state.match.matched,
     fallbackMeshes: state.match.fallback,
+    materialJobStatus: state.materialJobStatus,
     materialJobs: state.manifests.size,
     textureRequests: state.mapAudit.loadRequests,
     missingTextureLoads: state.mapAudit.missingMaps,
@@ -2114,11 +2125,13 @@ function bindControls() {
     state.mode = modeEl.value;
     clearMaterialCache();
     assignMaterials();
+    if (state.mode !== "fast") ensureMaterialsHydrated();
   });
   mapEl.addEventListener("change", () => {
     state.mapChannel = mapEl.value;
     clearMaterialCache();
     assignMaterials();
+    if (state.mode !== "fast") ensureMaterialsHydrated();
   });
   document.querySelector("#show-all").addEventListener("click", () => {
     setActiveRole("all");
@@ -2169,6 +2182,7 @@ function bindControls() {
       modeEl.value = mode;
       clearMaterialCache();
       assignMaterials();
+      if (state.mode !== "fast") ensureMaterialsHydrated();
     }
   };
 }
@@ -2195,18 +2209,48 @@ async function loadIndependentJobs(jobs) {
   );
 }
 
+function ensureMaterialsHydrated() {
+  if (state.materialJobStatus === "loaded") return Promise.resolve();
+  if (materialHydrationPromise) return materialHydrationPromise;
+  const jobs = independentJobsSource;
+  if (!jobs) return Promise.resolve();
+  state.materialJobStatus = "loading";
+  updateLog();
+  materialHydrationPromise = loadIndependentJobs(jobs)
+    .then(() => {
+      state.materialJobStatus = "loaded";
+      clearMaterialCache();
+      assignMaterials();
+      updateLog();
+    })
+    .catch((error) => {
+      state.materialJobStatus = "failed";
+      console.warn("PBR material jobs failed to load; keeping fast fallback materials.", error);
+      updateLog();
+    })
+    .finally(() => {
+      materialHydrationPromise = null;
+    });
+  return materialHydrationPromise;
+}
+
 async function main() {
   bindControls();
   setLightStrength(state.lightStrength);
   resize();
   window.addEventListener("resize", resize);
 
-  const [nodeMap, jobs] = await Promise.all([fetchJson(NODE_MAP_URL), fetchJson(JOBS_URL)]);
-  await loadIndependentJobs(jobs);
+  const gltfPromise = new GLTFLoader().loadAsync(GLB_URL);
+  const [nodeMap, jobs, gltf] = await Promise.all([
+    fetchJson(NODE_MAP_URL),
+    fetchJson(JOBS_URL),
+    gltfPromise
+  ]);
+  independentJobsSource = jobs;
+  state.roles = jobs.jobs || [];
   const roleMaps = buildRoleMaps(nodeMap);
   renderRoles();
 
-  const gltf = await new GLTFLoader().loadAsync(GLB_URL);
   modelRoot.add(gltf.scene);
 
   let index = 0;
@@ -2229,6 +2273,9 @@ async function main() {
   assignMaterials();
   applyLayoutFromProgress();
   fitVisibleView();
+  if (state.mode !== "fast") {
+    ensureMaterialsHydrated();
+  }
 
   let readyFrames = 0;
   function animate() {
