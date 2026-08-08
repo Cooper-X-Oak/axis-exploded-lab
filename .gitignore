@@ -1,0 +1,6 @@
+node_modules/
+.verify/
+.server.pid
+.DS_Store
+Thumbs.db
+*.log

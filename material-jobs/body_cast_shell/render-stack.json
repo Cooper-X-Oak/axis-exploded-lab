@@ -1,0 +1,32 @@
+﻿{
+  "schema": "ztovalve-control-stack/v1",
+  "name": "issue8-substance-per-role-stack-body_cast_shell",
+  "asset": {
+    "glb": "assets/models/fixed-ball-valve-issue8-industrial-uv.glb"
+  },
+  "parts": {
+    "nodeMap": "assets/manifests/fixed-ball-valve-issue8-industrial-uv-node-map.json",
+    "roles": "legacy/controls/parts/issue8-step-role-segmentation.json"
+  },
+  "render": "legacy/controls/render/issue8-per-role-substance-lookdev-render.json",
+  "lookdev": {
+    "view": "legacy/controls/render/issue8-view.json",
+    "environment": "legacy/controls/render/issue8-environment.json",
+    "grounding": "legacy/controls/render/issue8-grounding.json",
+    "lighting": "legacy/controls/render/issue8-lighting.json",
+    "materials": "material-jobs/body_cast_shell/material-control.json",
+    "mapping": "legacy/controls/mapping/issue8-renderer-role-mapping.json"
+  },
+  "animation": {
+    "camera": "legacy/controls/animation/issue8-per-role-substance-camera.json"
+  },
+  "issue8Rules": {
+    "roleJobOnly": true,
+    "role": "body_cast_shell",
+    "priorIssueAssetsReused": false,
+    "wholeAssemblyTexturePassAllowed": false,
+    "oneBatchGeneratesAllRolesAllowed": false,
+    "requiresTextureOnlyAndStyledIsolation": true
+  }
+}
+
