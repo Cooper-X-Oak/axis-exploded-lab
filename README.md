@@ -1,13 +1,22 @@
 # Axis Exploded Lab
 
-Axis Exploded Lab is a standalone Three.js preview for an axis-aligned commercial exploded assembly animation of a fixed ball valve.
+Axis Exploded Lab is a standalone Three.js control surface for an axis-aligned exploded assembly animation of a fixed ball valve.
+
+This repository is not the final online renderer. It intentionally keeps materials lightweight so the public page can load quickly and focus on animation inspection, rig tuning, part-family visibility, and transform export. Final material look development and 240-frame hero rendering should happen offline in Blender or another production renderer.
 
 The demo keeps the ball center fixed, disables self-rotation, and choreographs the explosion by assembly-axis order:
 
 - outer blockers and fasteners clear first;
 - shells and brackets move next;
 - inner seats, springs, packing, and stem stacks move after their parent blockers have cleared;
-- X, Y, Z-offset, spacing, and timeline progress are adjustable in the browser.
+- X flow-axis, Y stem-axis, Z depth-offset, spacing, and timeline progress are adjustable in the browser.
+- `window.__issue8HeroExplosion` exposes the rig contract for downstream Blender/keyframe export.
+
+## Scope
+
+- Three.js: load the GLB, color part families, operate the animation, inspect timing, and export transform data.
+- Blender: render final materials, lighting, camera, and image/video frames.
+- No online PBR texture loading is required for the public page.
 
 ## Run Locally
 

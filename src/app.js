@@ -7,7 +7,6 @@ const SITE_ROOT = new URL("../", import.meta.url);
 const ASSET_ROOT = new URL("assets/", SITE_ROOT);
 const GLB_URL = new URL("models/fixed-ball-valve-issue8-industrial-uv.glb", ASSET_ROOT).href;
 const NODE_MAP_URL = new URL("manifests/fixed-ball-valve-issue8-industrial-uv-node-map.json", ASSET_ROOT).href;
-const JOBS_URL = new URL("materials/issue8-per-role-independent-pbr-jobs.json", ASSET_ROOT).href;
 
 const ROLE_COLORS = [
   "#9fa3a3",
@@ -30,10 +29,9 @@ const ROLE_COLORS = [
 ];
 
 const VIEW_LABELS = {
-  assembled: "装配",
-  "hero-exploded": "商业爆炸",
-  exploded: "角色爆炸",
-  "material-grid": "17 材质"
+  assembled: "装配态",
+  "hero-exploded": "轴线爆炸",
+  exploded: "零件族参考"
 };
 
 const VALID_VIEWS = new Set(Object.keys(VIEW_LABELS));
@@ -99,29 +97,19 @@ const AXIS_RIG_BLOCKERS = {
   bottom_trunnion_stack: ["bottom_trunnion_fasteners"]
 };
 
-let independentJobsSource = null;
-let materialHydrationPromise = null;
-
 const state = {
-  mode: "fast",
+  mode: "rig",
   viewMode: "assembled",
-  mapChannel: "baseColor",
   activeRole: "all",
   explosionProgress: 0,
   reducedMotion: reduceMotionQuery.matches,
   lightStrength: 1,
   envStrength: 1,
-  roughnessScale: 1,
-  normalScale: 1,
-  heightScale: 1,
   axisXScale: 1,
   axisZScale: 0.75,
   axisYScale: 0.12,
   axisSpacingScale: 1,
   roles: [],
-  manifests: new Map(),
-  materialControls: new Map(),
-  textureCache: new Map(),
   materials: new Map(),
   records: [],
   meshes: [],
@@ -148,9 +136,7 @@ const state = {
   modelCenter: new THREE.Vector3(),
   modelSize: new THREE.Vector3(),
   modelMaxDim: 1,
-  match: { matched: 0, fallback: 0, missingRoleJobs: 0 },
-  materialJobStatus: "pending",
-  mapAudit: { declaredMaps: 0, loadRequests: 0, missingMaps: 0 }
+  match: { matched: 0, fallback: 0 }
 };
 
 const qs = new URLSearchParams(window.location.search);
@@ -160,9 +146,7 @@ function readScaleParam(key, fallback, min, max) {
   return Number.isFinite(value) ? THREE.MathUtils.clamp(value, min, max) : fallback;
 }
 
-if (qs.has("mode")) state.mode = qs.get("mode");
 if (qs.has("role")) state.activeRole = qs.get("role");
-if (qs.has("map")) state.mapChannel = qs.get("map");
 if (qs.has("view") && VALID_VIEWS.has(qs.get("view"))) state.viewMode = qs.get("view");
 state.axisXScale = readScaleParam("axisX", state.axisXScale, 0.25, 1.8);
 state.axisZScale = readScaleParam("axisZ", state.axisZScale, 0.15, 1.6);
@@ -180,22 +164,14 @@ const summaryEl = document.querySelector("#summary");
 const rolesEl = document.querySelector("#roles");
 const logEl = document.querySelector("#gate-log");
 const viewEl = document.querySelector("#view-mode");
-const modeEl = document.querySelector("#mode");
-const mapEl = document.querySelector("#map-channel");
 const explodeEl = document.querySelector("#explode-progress");
 const axisXEl = document.querySelector("#axis-x-scale");
 const axisZEl = document.querySelector("#axis-z-scale");
 const axisYEl = document.querySelector("#axis-y-scale");
 const axisSpacingEl = document.querySelector("#axis-spacing-scale");
 const lightEl = document.querySelector("#light-strength");
-const envEl = document.querySelector("#env-strength");
-const roughnessEl = document.querySelector("#roughness-scale");
-const normalEl = document.querySelector("#normal-scale");
-const heightEl = document.querySelector("#height-scale");
 
 viewEl.value = state.viewMode;
-modeEl.value = state.mode;
-mapEl.value = state.mapChannel;
 explodeEl.value = String(state.explosionProgress);
 syncAxisControls();
 
@@ -240,15 +216,6 @@ scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 const modelRoot = new THREE.Group();
 scene.add(modelRoot);
 
-function normalizePath(path) {
-  if (!path) return "";
-  const clean = String(path).replaceAll("\\", "/").trim();
-  if (clean.startsWith("data:") || clean.startsWith("blob:")) return clean;
-  if (clean.startsWith("http://") || clean.startsWith("https://")) return clean;
-  if (clean.startsWith("/")) return new URL(clean.slice(1), SITE_ROOT).href;
-  return new URL(clean, SITE_ROOT).href;
-}
-
 function normalizeName(name) {
   return String(name || "")
     .trim()
@@ -284,103 +251,16 @@ async function fetchJson(url) {
   return response.json();
 }
 
-function loadTexture(info, colorSpace) {
-  const url = normalizePath(info?.path || info);
-  if (!url) return null;
-  const cacheKey = `${url}|${colorSpace}`;
-  if (state.textureCache.has(cacheKey)) return state.textureCache.get(cacheKey);
-
-  state.mapAudit.loadRequests += 1;
-  const loader = new THREE.TextureLoader();
-  const texture = loader.load(
-    url,
-    () => updateLog(),
-    undefined,
-    () => {
-      state.mapAudit.missingMaps += 1;
-      updateLog();
-    }
-  );
-  texture.colorSpace = colorSpace;
-  texture.flipY = false;
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.RepeatWrapping;
-  texture.minFilter = THREE.LinearMipmapLinearFilter;
-  texture.magFilter = THREE.LinearFilter;
-  state.textureCache.set(cacheKey, texture);
-  return texture;
-}
-
 function roleColor(role) {
   const index = Math.max(0, state.roles.findIndex((item) => item.role === role));
   return ROLE_COLORS[index % ROLE_COLORS.length];
 }
 
-function materialConfig(role) {
-  const control = state.materialControls.get(role);
-  return control?.materials?.[role] || {};
-}
-
-function textureSet(role) {
-  const manifest = state.manifests.get(role);
-  return manifest?.textureSet || {};
-}
-
 function createMaterial(role) {
-  const key = [
-    state.mode,
-    state.mapChannel,
-    role,
-    state.roughnessScale,
-    state.normalScale,
-    state.heightScale,
-    state.envStrength
-  ].join("|");
+  const key = ["axis-rig", role, state.envStrength].join("|");
   if (state.materials.has(key)) return state.materials.get(key);
-  if (state.mode === "fast") {
-    const material = createFallbackMaterial(role);
-    material.name = `preview_fast_${role}`;
-    state.materials.set(key, material);
-    return material;
-  }
-
-  const maps = textureSet(role);
-  const config = materialConfig(role);
-  state.mapAudit.declaredMaps = Math.max(state.mapAudit.declaredMaps, Object.keys(maps).length);
-
-  let material;
-  if (state.mode === "texture-only") {
-    const selected = maps[state.mapChannel] || maps.baseColor;
-    const isColor = state.mapChannel === "baseColor";
-    material = new THREE.MeshBasicMaterial({
-      map: loadTexture(selected, isColor ? THREE.SRGBColorSpace : THREE.NoColorSpace),
-      color: 0xffffff,
-      side: THREE.DoubleSide
-    });
-  } else {
-    const color = config.baseColor
-      ? new THREE.Color(config.baseColor[0], config.baseColor[1], config.baseColor[2])
-      : new THREE.Color(roleColor(role));
-    const roughness = THREE.MathUtils.clamp((config.roughness ?? 0.48) * state.roughnessScale, 0.02, 1);
-    const metallic = THREE.MathUtils.clamp(config.metallic ?? 1, 0, 1);
-    material = new THREE.MeshStandardMaterial({
-      color,
-      map: loadTexture(maps.baseColor, THREE.SRGBColorSpace),
-      normalMap: loadTexture(maps.normal, THREE.NoColorSpace),
-      metalnessMap: loadTexture(maps.metallic, THREE.NoColorSpace),
-      roughnessMap: loadTexture(maps.roughness, THREE.NoColorSpace),
-      aoMap: loadTexture(maps.ao, THREE.NoColorSpace),
-      bumpMap: loadTexture(maps.height, THREE.NoColorSpace),
-      metalness: metallic,
-      roughness,
-      envMapIntensity: state.envStrength,
-      side: THREE.DoubleSide
-    });
-    material.normalScale.setScalar((config.normalStrength ?? 0.08) * state.normalScale * 4.0);
-    material.bumpScale = (config.heightDistance ?? 0.004) * state.heightScale;
-  }
-
-  material.name = `preview_${state.mode}_${role}`;
+  const material = createFallbackMaterial(role);
+  material.name = `axis_rig_${role || "fallback"}`;
   state.materials.set(key, material);
   return material;
 }
@@ -413,6 +293,24 @@ function buildRoleMaps(nodeMap) {
     }
   }
   return { exact, loose, exactRecord, looseRecord };
+}
+
+function rolesFromNodeMap(nodeMap) {
+  const records = Array.isArray(nodeMap.records) ? nodeMap.records : [];
+  const counts = new Map();
+  for (const record of records) {
+    const role = record.materialRole || record.materialKey || "unmatched";
+    counts.set(role, (counts.get(role) || 0) + 1);
+  }
+
+  const roleCounts = nodeMap.roleCounts && typeof nodeMap.roleCounts === "object"
+    ? nodeMap.roleCounts
+    : {};
+
+  return [...counts.entries()].map(([role, objectCount]) => ({
+    role,
+    objectCount: Number(roleCounts[role] ?? objectCount)
+  }));
 }
 
 function resolveRole(mesh, index, maps) {
@@ -1670,7 +1568,7 @@ function computeRoleLayouts() {
       order: index,
       roleCenter,
       exploded,
-      materialGrid: slotCenter.sub(roleCenter)
+      roleGrid: slotCenter.sub(roleCenter)
     });
   });
 }
@@ -1679,7 +1577,7 @@ function layoutTarget(role, viewMode = state.viewMode) {
   const layout = state.roleLayout.get(role);
   if (!layout || viewMode === "assembled") return ZERO.clone();
   if (viewMode === "hero-exploded") return ZERO.clone();
-  if (viewMode === "material-grid") return layout.materialGrid.clone();
+  if (viewMode === "role-grid") return layout.roleGrid.clone();
   return layout.exploded.clone();
 }
 
@@ -1708,11 +1606,10 @@ function syncViewControls() {
   const activeMap = {
     "#reset-assembly": state.viewMode === "assembled",
     "#hold-hero-exploded": state.viewMode === "hero-exploded",
-    "#hold-exploded": state.viewMode === "exploded",
-    "#show-material-grid": state.viewMode === "material-grid"
+    "#hold-exploded": state.viewMode === "exploded"
   };
   for (const [selector, active] of Object.entries(activeMap)) {
-    document.querySelector(selector).classList.toggle("is-active", active);
+    document.querySelector(selector)?.classList.toggle("is-active", active);
   }
   updateStatus();
 }
@@ -1955,7 +1852,7 @@ function playExplosion() {
 
 function updateStatus() {
   const viewLabel = VIEW_LABELS[state.viewMode] || state.viewMode;
-  statusEl.textContent = `${viewLabel} / ${state.activeRole} / ${state.mode} / visible ${state.visibleMeshes}`;
+  statusEl.textContent = `${viewLabel} / ${state.activeRole} / visible ${state.visibleMeshes}`;
 }
 
 function assignMaterials() {
@@ -1964,7 +1861,7 @@ function assignMaterials() {
     const role = mesh.userData.materialRole || "unmatched";
     mesh.visible = state.activeRole === "all" || state.activeRole === role;
     if (mesh.visible) visible += 1;
-    mesh.material = state.manifests.has(role) ? createMaterial(role) : createFallbackMaterial(role);
+    mesh.material = createMaterial(role);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     if (mesh.geometry?.attributes?.uv && !mesh.geometry.attributes.uv2) {
@@ -2049,18 +1946,16 @@ function renderRoles() {
 }
 
 function updateLog() {
-  const assignedRoles = new Set(state.meshes.map((mesh) => mesh.userData.materialRole));
-  const missingRoleJobs = [...assignedRoles].filter((role) => role && role !== "unmatched" && !state.manifests.has(role));
-  state.match.missingRoleJobs = missingRoleJobs.length;
   const summary = {
-    status: "preview-ready",
+    status: "rig-ready",
+    purpose: "Three.js axis animation controller; final material rendering is offline",
     glb: GLB_URL,
     viewMode: state.viewMode,
     viewLabel: VIEW_LABELS[state.viewMode] || state.viewMode,
     explosionProgress: Number(state.explosionProgress.toFixed(3)),
     heroExplosion: state.heroLayout,
     reducedMotion: state.reducedMotion,
-    mode: state.mode,
+    mode: "rig",
     activeRole: state.activeRole,
     roles: state.roles.length,
     roleGroups: state.roleGroups.size,
@@ -2069,21 +1964,14 @@ function updateLog() {
     visibleMeshes: state.visibleMeshes,
     matchedMeshes: state.match.matched,
     fallbackMeshes: state.match.fallback,
-    materialJobStatus: state.materialJobStatus,
-    materialJobs: state.manifests.size,
-    textureRequests: state.mapAudit.loadRequests,
-    missingTextureLoads: state.mapAudit.missingMaps,
-    missingRoleJobs,
+    materialPipeline: "disabled",
+    textureRequests: 0,
     controls: {
       lightStrength: state.lightStrength,
-      envStrength: state.envStrength,
-      roughnessScale: state.roughnessScale,
-      normalScale: state.normalScale,
-      heightScale: state.heightScale,
       axisScales: axisScalesSummary()
     }
   };
-  summaryEl.textContent = `${summary.viewLabel} / ${summary.roles} 个材质族 / ${summary.materialJobs} 个 PBR job / ${summary.meshes} 个 mesh`;
+  summaryEl.textContent = `${summary.viewLabel} / ${summary.roles} 个零件族 / ${summary.meshes} 个 mesh`;
   logEl.textContent = JSON.stringify(summary, null, 2);
   window.__issue8PreviewState = summary;
 }
@@ -2119,20 +2007,7 @@ function bindControls() {
   document.querySelector("#reset-assembly").addEventListener("click", () => animateToView("assembled"));
   document.querySelector("#hold-hero-exploded").addEventListener("click", () => animateToView("hero-exploded", { duration: 3200 }));
   document.querySelector("#hold-exploded").addEventListener("click", () => animateToView("exploded"));
-  document.querySelector("#show-material-grid").addEventListener("click", () => animateToView("material-grid"));
   document.querySelector("#play-explode").addEventListener("click", playExplosion);
-  modeEl.addEventListener("change", () => {
-    state.mode = modeEl.value;
-    clearMaterialCache();
-    assignMaterials();
-    if (state.mode !== "fast") ensureMaterialsHydrated();
-  });
-  mapEl.addEventListener("change", () => {
-    state.mapChannel = mapEl.value;
-    clearMaterialCache();
-    assignMaterials();
-    if (state.mode !== "fast") ensureMaterialsHydrated();
-  });
   document.querySelector("#show-all").addEventListener("click", () => {
     setActiveRole("all");
   });
@@ -2141,30 +2016,6 @@ function bindControls() {
     await navigator.clipboard.writeText(JSON.stringify(window.__issue8PreviewState, null, 2));
   });
   lightEl.addEventListener("input", () => setLightStrength(lightEl.value));
-  envEl.addEventListener("input", () => {
-    state.envStrength = Number(envEl.value);
-    document.querySelector("#env-value").textContent = state.envStrength.toFixed(2);
-    clearMaterialCache();
-    assignMaterials();
-  });
-  roughnessEl.addEventListener("input", () => {
-    state.roughnessScale = Number(roughnessEl.value);
-    document.querySelector("#roughness-value").textContent = state.roughnessScale.toFixed(2);
-    clearMaterialCache();
-    assignMaterials();
-  });
-  normalEl.addEventListener("input", () => {
-    state.normalScale = Number(normalEl.value);
-    document.querySelector("#normal-value").textContent = state.normalScale.toFixed(2);
-    clearMaterialCache();
-    assignMaterials();
-  });
-  heightEl.addEventListener("input", () => {
-    state.heightScale = Number(heightEl.value);
-    document.querySelector("#height-value").textContent = state.heightScale.toFixed(2);
-    clearMaterialCache();
-    assignMaterials();
-  });
   reduceMotionQuery.addEventListener("change", (event) => {
     state.reducedMotion = event.matches;
     updateLog();
@@ -2177,13 +2028,7 @@ function bindControls() {
     setAxisScales: (scales, fit = true) => setAxisScales(scales, { fit }),
     playExplosion,
     getHeroContract: () => window.__issue8HeroExplosion,
-    setMode: (mode) => {
-      state.mode = mode;
-      modeEl.value = mode;
-      clearMaterialCache();
-      assignMaterials();
-      if (state.mode !== "fast") ensureMaterialsHydrated();
-    }
+    setMode: () => state.mode
   };
 }
 
@@ -2194,46 +2039,6 @@ function resize() {
   camera.updateProjectionMatrix();
 }
 
-async function loadIndependentJobs(jobs) {
-  state.roles = jobs.jobs || [];
-  await Promise.all(
-    state.roles.map(async (job) => {
-      const role = job.role;
-      const manifest = await fetchJson(new URL(`material-jobs/${role}/pbr-job-manifest.json`, SITE_ROOT).href);
-      state.manifests.set(role, manifest);
-      const controlPath = normalizePath(manifest.materialControl?.path);
-      if (controlPath) {
-        state.materialControls.set(role, await fetchJson(controlPath));
-      }
-    })
-  );
-}
-
-function ensureMaterialsHydrated() {
-  if (state.materialJobStatus === "loaded") return Promise.resolve();
-  if (materialHydrationPromise) return materialHydrationPromise;
-  const jobs = independentJobsSource;
-  if (!jobs) return Promise.resolve();
-  state.materialJobStatus = "loading";
-  updateLog();
-  materialHydrationPromise = loadIndependentJobs(jobs)
-    .then(() => {
-      state.materialJobStatus = "loaded";
-      clearMaterialCache();
-      assignMaterials();
-      updateLog();
-    })
-    .catch((error) => {
-      state.materialJobStatus = "failed";
-      console.warn("PBR material jobs failed to load; keeping fast fallback materials.", error);
-      updateLog();
-    })
-    .finally(() => {
-      materialHydrationPromise = null;
-    });
-  return materialHydrationPromise;
-}
-
 async function main() {
   bindControls();
   setLightStrength(state.lightStrength);
@@ -2241,13 +2046,11 @@ async function main() {
   window.addEventListener("resize", resize);
 
   const gltfPromise = new GLTFLoader().loadAsync(GLB_URL);
-  const [nodeMap, jobs, gltf] = await Promise.all([
+  const [nodeMap, gltf] = await Promise.all([
     fetchJson(NODE_MAP_URL),
-    fetchJson(JOBS_URL),
     gltfPromise
   ]);
-  independentJobsSource = jobs;
-  state.roles = jobs.jobs || [];
+  state.roles = rolesFromNodeMap(nodeMap);
   const roleMaps = buildRoleMaps(nodeMap);
   renderRoles();
 
@@ -2273,9 +2076,6 @@ async function main() {
   assignMaterials();
   applyLayoutFromProgress();
   fitVisibleView();
-  if (state.mode !== "fast") {
-    ensureMaterialsHydrated();
-  }
 
   let readyFrames = 0;
   function animate() {
