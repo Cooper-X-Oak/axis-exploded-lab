@@ -6,7 +6,7 @@ import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
 
 const SITE_ROOT = new URL("../", import.meta.url);
 const ASSET_ROOT = new URL("assets/", SITE_ROOT);
-const GLB_URL = new URL("models/fixed-ball-valve-issue8-rig-preview.glb", ASSET_ROOT).href;
+const GLB_URL = new URL("models/fixed-ball-valve-issue8-rig-web-simplified.glb", ASSET_ROOT).href;
 const NODE_MAP_URL = new URL("manifests/fixed-ball-valve-issue8-industrial-uv-node-map.json", ASSET_ROOT).href;
 
 const ROLE_COLORS = [
@@ -2062,6 +2062,9 @@ async function main() {
   let index = 0;
   gltf.scene.traverse((child) => {
     if (!child.isMesh) return;
+    if (!child.geometry?.attributes?.normal) {
+      child.geometry.computeVertexNormals();
+    }
     const role = resolveRole(child, index, roleMaps);
     child.userData.materialRole = role;
     child.userData.originalName = child.name;
