@@ -2,10 +2,11 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
 
 const SITE_ROOT = new URL("../", import.meta.url);
 const ASSET_ROOT = new URL("assets/", SITE_ROOT);
-const GLB_URL = new URL("models/fixed-ball-valve-issue8-industrial-uv.glb", ASSET_ROOT).href;
+const GLB_URL = new URL("models/fixed-ball-valve-issue8-rig-preview.glb", ASSET_ROOT).href;
 const NODE_MAP_URL = new URL("manifests/fixed-ball-valve-issue8-industrial-uv-node-map.json", ASSET_ROOT).href;
 
 const ROLE_COLORS = [
@@ -2045,7 +2046,9 @@ async function main() {
   resize();
   window.addEventListener("resize", resize);
 
-  const gltfPromise = new GLTFLoader().loadAsync(GLB_URL);
+  const gltfLoader = new GLTFLoader();
+  gltfLoader.setMeshoptDecoder(MeshoptDecoder);
+  const gltfPromise = gltfLoader.loadAsync(GLB_URL);
   const [nodeMap, gltf] = await Promise.all([
     fetchJson(NODE_MAP_URL),
     gltfPromise
